@@ -1,0 +1,327 @@
+---
+title: "General Activity/Neural Network UMAPs"
+author: Sierra Boyd
+output:
+  html_document:
+    theme: cerulean
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+#only look at activity and network data for now since axon tracking was conducted in different DOPs
+```{r load packages}
+
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(pracma)
+library(conflicted)
+library(data.table)
+library(pheatmap)
+library(caret)
+library(umap)
+library(dbscan)
+library(pheatmap)
+
+conflicts_prefer(dplyr::filter())
+
+set.seed(2)
+
+```
+
+#Load Network data
+```{r}
+#Set wd to an exports folder
+setwd("~")
+getwd()
+
+#Indicate input directory
+project.input.dir <-"~"
+
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Read in data files and remove extra columns
+for (i in csv_files){
+  df<-fread(i)
+  df<-df[,-1]
+  df<-df[,-8]
+  Network<-df
+}
+
+#remove any NAs
+Network<-Network%>% filter(!is.na(value))
+
+```
+
+#Load Activity data
+```{r}
+#Indicate input directory
+project.input.dir <-"~"
+
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#Read in data files and remove extra columns
+for (i in csv_files){
+  df<-fread(i)
+  df<-df[,-1]
+  Activity<-df
+}
+
+#remove any NAs
+Activity<-Activity%>% filter(!is.na(value))
+
+```
+
+#Wrangle data for UMAP
+```{r}
+#full join all data into one df
+Norm_Data <- rbind(Activity,Network)
+
+#Set as a data table
+Norm_Data<-as.data.table(Norm_Data)
+
+#set Controls to a dose of 0.0001
+Norm_Data$Dosage<-gsub("Control",0.0001,Norm_Data$Dosage)
+
+#make numeric
+Norm_Data$value<-as.numeric(Norm_Data$value)
+
+#Create Binary column for controls. n=non-treated, t=treated
+Norm_Data <- Norm_Data[, wllt := ifelse(Dosage %in% 0.0001, 'n','t')]
+
+#Set plate types. Plate serial numbers starting in T are Twenty-four well, M is for Six-well
+Norm_Data<-Norm_Data%>%
+  mutate(Plate_Type=ifelse(grepl("T",Group_ID),"Twenty_four","Six"))
+
+#Find the baseline value (bval) or the median of the controls for each endpoint, DOP, and plate type
+Norm_Data[,bval:=median(value[wllt=='n']),by=c("Endpoint","Plate_Type","DOP")]
+
+#Check if there are any na bvals
+NA_bvals <- Norm_Data[is.na(bval),]
+
+#Remove nas if needed
+Norm_Data <- Norm_Data[!is.na(bval),]
+
+#Calculate response by normalizing to bval
+Norm_Data <- Norm_Data[,resp := ((value - bval) / bval)* 100]
+
+#set as a data frame
+Norm_Data<-as.data.frame(Norm_Data)
+
+#Remove duplicates
+Norm_Data<-Norm_Data%>%distinct(Group_ID, Dosage,Chemical,Endpoint,DOP,Plate_Type,.keep_all=TRUE)
+
+#Change 0.0001 concs to controls in chemical column
+Norm_Data <- Norm_Data %>%
+  mutate(Chemical = ifelse(Dosage == 0.0001, "Control", Chemical))
+
+#Remove value column
+Norm_Data<-select(Norm_Data, -c("value","wllt","bval"))
+
+#Remove duplicates
+Norm_Data<-Norm_Data%>%distinct(Dosage,Chemical,Endpoint,DOP,Group_ID,.keep_all=TRUE)
+
+#create wide table
+Norm_Wide<-Norm_Data%>%
+  pivot_wider(names_from=DOP, values_from=resp)
+
+#remove NA rows
+Norm_Wide_filtered<-Norm_Wide%>%
+  na.omit()
+#check for NAs
+sum(is.na(Norm_Wide_filtered))
+
+
+```
+
+#Integrate through DOPs and to look at spatial distribution of chemicals and endpoints 
+```{r}
+#Change 0.0001 concs to controls in chemical column
+Norm_Wide_filtered <- Norm_Wide_filtered %>%
+  mutate(Chemical = ifelse(Dosage == 0.0001, "Control", Chemical))
+
+
+#filter to only keep the second highest concentrations of each Chemical, excpet for loperamide because of high potency
+ Norm_Wide_filtered <-Norm_Wide_filtered%>%  filter(
+                                                  (Chemical== "Dieldrin" & Dosage == 30) |
+                                                  (Chemical== "Dieldrin" & Dosage == 10) |
+                                                  (Chemical== "Dieldrin" & Dosage == 100) |
+                                                  (Chemical=="Deltamethrin" & Dosage== 30) |
+                                                  (Chemical== "Deltamethrin" & Dosage == 10) |
+                                                  (Chemical== "Deltamethrin" & Dosage == 100) |
+                                                  (Chemical=="Loperamide" & Dosage== 0.03 )|
+                                                  (Chemical=="Loperamide" & Dosage== 0.1 )|
+                                                  (Chemical=="Loperamide" & Dosage== 3 )|
+                                                  (Chemical=="Loperamide" & Dosage== 0.3 )|
+                                                  (Chemical=="Loperamide" & Dosage== 1 )|
+                                                  (Chemical=="Glyphosate" & Dosage== 10 ) |
+                                                  (Chemical=="Glyphosate" & Dosage== 30 ) |
+                                                  (Chemical=="Glyphosate" & Dosage== 3 ) |
+                                                  (Chemical=="Control"))
+
+
+set.seed(2)
+
+#remove NA rows
+Norm_Wide_filtered<-Norm_Wide_filtered%>%
+  na.omit()
+#check for NAs
+sum(is.na(Norm_Wide_filtered))
+
+#Select needed columns only
+umap_data<-Norm_Wide_filtered%>%
+  select(-c(Chemical,Dosage,Endpoint,Group_ID,Plate_Type))
+
+#make a umap of the data
+umap_results<-umap(umap_data)
+
+#store the layout features under umap_coords
+umap_coords<-umap_results$layout
+
+#make the umap_coords a df
+df_umap<-as.data.frame(umap_coords)
+
+#merge the chemical, dose, and endpoint data back in
+df_umap$Chemical<-Norm_Wide_filtered$Chemical
+df_umap$Dosage<-Norm_Wide_filtered$Dosage
+df_umap$Endpoint<-Norm_Wide_filtered$Endpoint
+
+#update endpoint names
+df_umap$Endpoint<-gsub("ISI_mean","Inter-Spike-Interval (ms)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("activeArea","Active Area",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("amplitude_mean","Spike Amplitude (µM)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("firingRate_mean","Firing Rate (Hz)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("Duration","Cluster Duration (ms)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("burstDur","Burst Duration (ms)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("BurstFreq","Burst Frequency (Hz)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("BurstPeak_Mean","Burst Peak (Hz)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("CountsperCluster","Number of Bursts per Cluster",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("IBI","Inter-Burst-Interval (ms)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("ICI","Inter-Cluster-Interval (ms)",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("SPB_Mean","Number of Spikes per Burst",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("ClusterFreq","Cluster Frequency (Counts/min)",df_umap$Endpoint)
+
+#plot UMAP
+Activity_Network_2Doses_UMAP_Endpoint<-ggplot(df_umap,aes(x=V1,y=V2,color=Endpoint,shape=Chemical))+
+  geom_point(size=3.0,alpha=0.7)+
+  theme_minimal()+
+    scale_color_manual(values=c("darkgreen","springgreen3","springgreen1","palegreen","cyan","turquoise3","dodgerblue","dodgerblue4","darkblue","purple4","purple2","violet","violetred"))+
+  scale_shape_manual(values=c(8,15,16,17,18))+
+  labs(x="UMAP1",y="UMAP2")+
+  labs(title="Uniform Manifold Approximation and Projection")
+
+Activity_Network_2Doses_UMAP_Endpoint
+
+#Save 
+ggsave("Activity_Network_UMAP_Endpoint.png",plot=Activity_Network_2Doses_UMAP_Endpoint,bg="white",width=6.2,height=5.8)
+
+```
+
+#DSCAN UMAP Results
+```{r}
+#apply dbscan function
+dbscan_result<-dbscan(umap_results$layout,eps=0.5,minPts=5)
+
+#Assign dbscan results to the original umap results df
+umap_results$layout<-as.data.frame(umap_results$layout)
+umap_results$layout$cluster<-as.factor(dbscan_result$cluster)
+
+#plot dbscan results
+Activity_Network_2Doses_UMAP_Endpoint_DBSCAN<-ggplot(umap_results$layout,aes(x=V1,y=V2,color=cluster))+
+  geom_point(size=3,alpha=0.8)+
+  theme_minimal()+
+  labs(x="UMAP1",y="UMAP2")+
+  scale_color_manual(values=c("darkgreen","springgreen3","turquoise3","dodgerblue","dodgerblue4","purple2","violet","deeppink4"))+
+  labs(title="Density-based Spatial Clustering of Applications with Noise")
+
+Activity_Network_2Doses_UMAP_Endpoint_DBSCAN
+
+#Save
+ggsave("Activity_Network_UMAP_Endpoint_DBSCAN.png",plot=Activity_Network_2Doses_UMAP_Endpoint_DBSCAN,bg="white",width=6.2,height=5.8)
+
+#Copy the Norm_wide_filtered data set to a new df here (data set before umap function)
+df<-Norm_Wide_filtered
+
+#look at chemical and endpoint compositions in clusters
+df$cluster<-as.factor(dbscan_result$cluster)
+chemical_cluster_summary<-table(df$Chemical,df$cluster)
+endpoint_cluster_summary<-table(df$Endpoint,df$cluster)
+chemical_proportions<-prop.table(chemical_cluster_summary,2)
+print(chemical_proportions)
+endpoint_proportions<-prop.table(endpoint_cluster_summary,2)
+
+```
+
+#Chemical distributions of clusters
+```{r}
+#Set chemical compositions of clusters to a df
+chemical_proportions<-as.data.table(chemical_proportions)
+
+#update names
+setnames(chemical_proportions,"V1","Chemical")
+setnames(chemical_proportions,"V2","Cluster")
+
+#manually set chemical order
+Chemical_order<-c("Deltamethrin","Dieldrin","Loperamide","Glyphosate","Control")
+chemical_proportions$Chemical<-factor(chemical_proportions$Chemical,levels=Chemical_order)
+
+#plot
+Activity_Network_2Doses_UMAP_DBSCAN_Chemical_proportion<-ggplot(chemical_proportions,aes(x=Cluster,y=Chemical,size=N,color=Cluster))+
+  geom_point(alpha=0.7)+
+    scale_size_continuous(name="Proportion",range=c(1,12))+
+    scale_color_manual(values=c("darkgreen","springgreen3","turquoise3","dodgerblue","dodgerblue4","purple2","violet","deeppink4"))+
+  theme_minimal()
+
+Activity_Network_2Doses_UMAP_DBSCAN_Chemical_proportion
+
+#save
+ggsave("Activity_Network_Chemical_proportion.png",plot=Activity_Network_2Doses_UMAP_DBSCAN_Chemical_proportion,bg="white",width=5,height=5.8)
+
+```
+
+#Endpoint distributions of clusters
+```{r}
+#Set endpoint compositions of clusters to a df
+endpoint_proportions<-as.data.table(endpoint_proportions)
+
+#update names
+setnames(endpoint_proportions,"V1","Endpoint")
+setnames(endpoint_proportions,"V2","Cluster")
+
+#Edit Endpoint Names
+endpoint_proportions$Endpoint<-gsub("ISI_mean","Inter-Spike-Interval (ms)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("activeArea","Active Area",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("amplitude_mean","Spike Amplitude (µM)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("firingRate_mean","Firing Rate (Hz)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("Duration","Cluster Duration (ms)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("burstDur","Burst Duration (ms)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("BurstFreq","Burst Frequency (Hz)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("BurstPeak_Mean","Burst Peak (Hz)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("CountsperCluster","Number of Bursts per Cluster",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("IBI","Inter-Burst-Interval (ms)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("ICI","Inter-Cluster-Interval (ms)",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("SPB_Mean","Number of Spikes per Burst",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("ClusterFreq","Cluster Frequency (Counts/min)",endpoint_proportions$Endpoint)
+
+#plot
+Activity_Network_2Doses_UMAP_DBSCAN_Endpoint_proportion<-ggplot(endpoint_proportions,aes(x=Cluster,y=Endpoint,size=N,color=Cluster))+
+  geom_point(alpha=0.7)+
+    scale_size_continuous(name="Proportion",range=c(1,12))+
+      scale_color_manual(values=c("darkgreen","springgreen3","turquoise3","dodgerblue","dodgerblue4","purple2","violet","deeppink4"))+
+  theme_minimal()
+
+Activity_Network_2Doses_UMAP_DBSCAN_Endpoint_proportion
+
+#save
+ggsave("Activity_Network_Endpoint_proportion.png",plot=Activity_Network_2Doses_UMAP_DBSCAN_Endpoint_proportion,bg="white",width=5,height=5.8)
+```
+
