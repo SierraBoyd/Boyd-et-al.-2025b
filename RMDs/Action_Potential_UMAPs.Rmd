@@ -1,0 +1,331 @@
+---
+title: "Action Potential Propagation UMAPs"
+author: Sierra Boyd
+output:
+  html_document:
+    theme: cerulean
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+```{r load packages}
+
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(pracma)
+library(conflicted)
+library(data.table)
+library(pheatmap)
+library(caret)
+library(umap)
+library(dbscan)
+library(pheatmap)
+
+conflicts_prefer(dplyr::filter())
+
+set.seed(2)
+
+```
+
+#Load action potential data
+```{r}
+#Set wd to an exports folder
+setwd("~")
+getwd()
+
+#Indicate input directory
+project.input.dir <-"~"
+
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#Read in data files and remove extra columns
+for (i in csv_files){
+  df<-fread(i)
+  df<-df[,-1]
+  df<-df[,-2]
+  Axon<-df
+}
+
+#remove any NAs
+Axon<-Axon%>% filter(!is.na(value))
+
+```
+
+#Normalize and take means
+```{r}
+#Rename data frame to match existing code
+Norm_Data <- Axon
+
+#Set as a data table
+Norm_Data<-as.data.table(Norm_Data)
+
+#set Controls to a dose of 0.0001
+Norm_Data$Dosage<-gsub("Control",0.0001,Norm_Data$Dosage)
+
+#make numeric
+Norm_Data$value<-as.numeric(Norm_Data$value)
+
+#Create Binary column for controls. n=non-treated, t=treated
+Norm_Data <- Norm_Data[, wllt := ifelse(Dosage %in% 0.0001, 'n','t')]
+
+#Subset controls
+Norm_Data<-Norm_Data%>%
+  mutate(Plate_Type=ifelse(grepl("T",Group_ID),"Twenty_four","Six"))
+
+#Find the baseline value (bval) or the median of the controls for each endpoint, DOP, and plate type
+Norm_Data[,bval:=median(value[wllt=='n']),by=c("Endpoint","Plate_Type","DOP")]
+
+#Check if there are any na bvals
+NA_bvals <- Norm_Data[is.na(bval),]
+
+#Remove nas if needed
+Norm_Data <- Norm_Data[!is.na(bval),]
+
+#Calculate response by normalizing to bval
+Norm_Data <- Norm_Data[,resp := ((value - bval) / bval)* 100]
+
+#set as a data frame
+Norm_Data<-as.data.frame(Norm_Data)
+
+#Remove duplicates
+Norm_Data<-Norm_Data%>%distinct(Group_ID, Dosage,Chemical,Endpoint,DOP,Plate_Type,.keep_all=TRUE)
+
+#Change 0.0001 concs to controls in chemical column
+Norm_Data <- Norm_Data %>%
+  mutate(Chemical = ifelse(Dosage == 0.0001, "Control", Chemical))
+
+#Remove value column
+Norm_Data<-select(Norm_Data, -c("value","wllt","bval"))
+
+#Remove duplicates
+Norm_Data<-Norm_Data%>%distinct(Dosage,Chemical,Endpoint,DOP,Group_ID,.keep_all=TRUE)
+
+#create wide table
+Norm_Wide<-Norm_Data%>%
+  pivot_wider(names_from=DOP, values_from=resp)
+
+#Not enough data for DIV6,8,13 remove from analysis
+Norm_Wide<-Norm_Wide%>%select(-c("6","8","13"))
+
+#remove NA rows
+Norm_Wide_filtered<-Norm_Wide%>%
+  na.omit()
+#check for NAs
+sum(is.na(Norm_Wide_filtered))
+
+
+
+```
+
+#Span by DOP and look at endpoint only for high dose and control
+```{r}
+
+#Change 0.0001 concs to controls in chemical column
+Norm_Wide_filtered <- Norm_Wide_filtered %>%
+  mutate(Chemical = ifelse(Dosage == 0.0001, "Control", Chemical))
+
+#filter to only keep the second highest concentration of each Chemical
+ Norm_Wide_filtered <-Norm_Wide_filtered%>%  filter(
+                                                  (Chemical== "Dieldrin" & Dosage == 30) |
+                                                  (Chemical== "Dieldrin" & Dosage == 10) |
+                                                  (Chemical== "Dieldrin" & Dosage == 100) |
+                                                  (Chemical=="Deltamethrin" & Dosage== 3) | #include deltamethrin at 3.0uM because deltamethrin is poorly represented in the UMAP
+                                                  (Chemical=="Deltamethrin" & Dosage== 30) |
+                                                  (Chemical== "Deltamethrin" & Dosage == 10) |
+                                                  (Chemical== "Deltamethrin" & Dosage == 100) |
+                                                  (Chemical=="Loperamide" & Dosage== 0.03 )|
+                                                  (Chemical=="Loperamide" & Dosage== 0.1 )|
+                                                  (Chemical=="Loperamide" & Dosage== 3 )|
+                                                  (Chemical=="Loperamide" & Dosage== 0.3 )|
+                                                  (Chemical=="Loperamide" & Dosage== 1 )|
+                                                  (Chemical=="Glyphosate" & Dosage== 10 ) |
+                                                  (Chemical=="Glyphosate" & Dosage== 30 ) |
+                                                  (Chemical=="Glyphosate" & Dosage== 3 ) |
+                                                  (Chemical=="Control"))
+
+set.seed(2)
+
+#remove NA rows
+Norm_Wide_filtered<-Norm_Wide_filtered%>%
+  na.omit()
+#check for NAs
+sum(is.na(Norm_Wide_filtered))
+
+#Select needed columns only
+umap_data<-Norm_Wide_filtered%>%
+  select(-c(Chemical,Dosage,Endpoint,Group_ID,Plate_Type))
+
+#make a umap of the data
+umap_results<-umap(umap_data)
+
+#store the layout features under umap_coords
+umap_coords<-umap_results$layout
+
+#make the umap_coords a df
+df_umap<-as.data.frame(umap_coords)
+
+#merge the chemical, dose, and endpoint data back in
+df_umap$Chemical<-Norm_Wide_filtered$Chemical
+df_umap$Dosage<-Norm_Wide_filtered$Dosage
+df_umap$Endpoint<-Norm_Wide_filtered$Endpoint
+
+#update endpoint names
+df_umap$Endpoint<-gsub("branchLen_mean_branch","Branch Length (µm)-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("branchConductionVel_mean_branch","Conduction Velocity (m/s)-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("conductionVelFit_mean_branch","Conduction Velocity Coefficient of Variation-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("latFromInitSite_mean_branch","Latency from Initation Site Velocity (ms)-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("distFromInitSite_mean_branch","Distance from Initation Site (µm)-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("neuronFiringRate_mean_branch","Firing Rate (Hz)-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("spikesNoPerConfig_mean_mean_branch","Number of Spikes per Configuration-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("completeness_mean_branch","Completeness-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("fisherProjectionDistance_mean_branch","Fisher Projection Distance-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("neuronConductionVel_mean_neuron","Conduction Velocity (m/s)-Neuron",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("totalAxonLen_mean_neuron","Total Axon Length (µm)-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("longestBranchLen_mean_neuron","Longest Branch Length (µm)-Neuron",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("longestDistFromInitSite_mean_neuron","Longest Distance from Initation Site (µm)-Neuron",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("longestLat_mean_neuron","Longest Latency (ms)-Neuron",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("amplitudeInitSite_mean_neuron","Amplitude at Initiaiton Site (Hz)-Neuron",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("totNoSpikes_mean_neuron","Number of Spikes per Neuron-Neuron",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("neuronFiringRate_mean_neuron","Firing Rate (Hz)-Neuron",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("amplitudeInitSite_mean_summary","Amplitude at Initation Site (Hz)-Well",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("totNoSpikes_mean_branch","Total Number of Spikes-Branch",df_umap$Endpoint)
+df_umap$Endpoint<-gsub("silhouetteScore_mean_branch","Silhouette Score-Branch",df_umap$Endpoint)
+
+#plot UMAP
+AxonTracking_2Doses_UMAP<-ggplot(df_umap,aes(x=V1,y=V2,color=Endpoint,shape=Chemical))+
+  geom_point(size=3.0,alpha=0.7)+
+  theme_minimal()+
+    scale_color_manual(values=c("darkgreen","springgreen4","springgreen2","palegreen","aquamarine3","aquamarine4","turquoise3","turquoise4","skyblue","dodgerblue2","dodgerblue4","darkblue","purple4","purple3","mediumorchid","violet","hotpink","violetred","deeppink4"))+
+  scale_shape_manual(values=c(8,15,16,17,18))+
+  theme(legend.position = "right")+
+  labs(x="UMAP1",y="UMAP2")+
+  labs(title="Uniform Manifold Approximation and Projection")
+
+AxonTracking_2Doses_UMAP
+
+#Save 
+ggsave("AxonTracking_UMAP.png",plot=AxonTracking_2Doses_UMAP,bg="white",width=8,height=6.3)
+
+
+```
+
+#DSCAN UMAP Results
+```{r}
+
+#apply dbscan function
+dbscan_result<-dbscan(umap_results$layout,eps=0.5,minPts=5)
+
+#Assign dbscan results to the original umap results df
+umap_results$layout<-as.data.frame(umap_results$layout)
+umap_results$layout$cluster<-as.factor(dbscan_result$cluster)
+
+#plot
+AxonTracking_2Doses_UMAP_DBSCAN<-ggplot(umap_results$layout,aes(x=V1,y=V2,color=cluster))+
+  geom_point(size=3,alpha=0.8)+
+  theme_minimal()+
+  scale_color_manual(values=c("darkgreen","springgreen2","turquoise3","dodgerblue","dodgerblue4","purple2","violet","deeppink4"))+
+  labs(x="UMAP1",y="UMAP2")+
+  labs(title="Density-based Spatial Clustering of Applications with Noise")
+
+  AxonTracking_2Doses_UMAP_DBSCAN
+  
+#save
+ggsave("AxonTracking_UMAP_DBSCAN.png",plot=AxonTracking_2Doses_UMAP_DBSCAN,bg="white",width=6.2,height=5.8)
+
+  
+#Copy the Norm_wide_filtered data set to a new df here (data set before umap function)
+df<-Norm_Wide_filtered
+
+#look at chemical and endpoint compositions in clusters
+df$cluster<-as.factor(dbscan_result$cluster)
+chemical_cluster_summary<-table(df$Chemical,df$cluster)
+endpoint_cluster_summary<-table(df$Endpoint,df$cluster)
+chemical_proportions<-prop.table(chemical_cluster_summary,2)
+print(chemical_proportions)
+endpoint_proportions<-prop.table(endpoint_cluster_summary,2)
+```
+
+#Chemical distributions of clusters
+```{r}
+#Set chemical compositions of clusters to a df
+chemical_proportions<-as.data.table(chemical_proportions)
+
+#update names
+setnames(chemical_proportions,"V1","Chemical")
+setnames(chemical_proportions,"V2","Cluster")
+
+#manually set chemical order
+Chemical_order<-c("Deltamethrin","Dieldrin","Loperamide","Glyphosate","Control")
+chemical_proportions$Chemical<-factor(chemical_proportions$Chemical,levels=Chemical_order)
+#plot
+AxonTracking_2Doses_UMAP_DBSCAN_Chemical_proportions<-ggplot(chemical_proportions,aes(x=Cluster,y=Chemical,size=N,color=Cluster))+
+  geom_point(alpha=0.7)+
+    scale_size_continuous(name="Proportion",range=c(1,12))+
+    scale_color_manual(values=c("darkgreen","springgreen2","turquoise3","dodgerblue","dodgerblue4","purple2","violet","deeppink4"))+
+  theme_minimal()
+
+AxonTracking_2Doses_UMAP_DBSCAN_Chemical_proportions
+
+#save
+ggsave("AxonTracking_Chemical_proportions.png",plot=AxonTracking_2Doses_UMAP_DBSCAN_Chemical_proportions,bg="white",width=5,height=5.8)
+
+```
+
+#Endpoint distributions of clusters
+```{r}
+#Set endpoint compositions of clusters to a df
+endpoint_proportions<-as.data.table(endpoint_proportions)
+
+#update names
+setnames(endpoint_proportions,"V1","Endpoint")
+setnames(endpoint_proportions,"V2","Cluster")
+
+#Edit Endpoint Names
+endpoint_proportions$Endpoint<-gsub("branchLen_mean_branch","Branch Length (µm)-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("branchConductionVel_mean_branch","Conduction Velocity (m/s)-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("conductionVelFit_mean_branch","Conduction Velocity Coefficient of Variation-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("latFromInitSite_mean_branch","Latency from Initation Site Velocity (ms)-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("distFromInitSite_mean_branch","Distance from Initation Site (µm)-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("neuronFiringRate_mean_branch","Firing Rate (Hz)-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("spikesNoPerConfig_mean_mean_branch","Number of Spikes per Configuration-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("completeness_mean_branch","Completeness-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("fisherProjectionDistance_mean_branch","Fisher Projection Distance-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("neuronConductionVel_mean_neuron","Conduction Velocity (m/s)-Neuron",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("totalAxonLen_mean_neuron","Total Axon Length (µm)-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("longestBranchLen_mean_neuron","Longest Branch Length (µm)-Neuron",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("longestDistFromInitSite_mean_neuron","Longest Distance from Initation Site (µm)-Neuron",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("longestLat_mean_neuron","Longest Latency (ms)-Neuron",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("amplitudeInitSite_mean_neuron","Amplitude at Initiaiton Site (Hz)-Neuron",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("totNoSpikes_mean_neuron","Number of Spikes per Neuron-Neuron",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("neuronFiringRate_mean_neuron","Firing Rate (Hz)-Neuron",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("noTotalAnalyzedNeurons_summary","Number of Total Analyzed Neurons-Well",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("neuronConductionVel_mean_summary","Conduction Velocity (m/s)-Well",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("totalAxonLen_mean_summary","Total Axon Length (µm)-Well",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("longestBranchLen_mean_summary","Longest Branch Length (µm)-Well",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("longestDistFromInitSite_mean_summary","Longest Distance from Initation Site Length (µm)-Well",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("longestLat_mean_summary","Longest Latency (ms)-Well",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("amplitudeInitSite_mean_summary","Amplitude at Initation Site (Hz)-Well",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("totNoSpikes_mean_branch","Number of Spikes-Branch",endpoint_proportions$Endpoint)
+endpoint_proportions$Endpoint<-gsub("silhouetteScore_mean_branch","Silhouette Score-Branch",endpoint_proportions$Endpoint)
+
+#Plot
+AxonTracking_2Doses_UMAP_DBSCAN_Endpoint_proportions<-ggplot(endpoint_proportions,aes(x=Cluster,y=Endpoint,size=N,color=Cluster))+
+  geom_point(alpha=0.7)+
+    scale_size_continuous(name="Proportion",range=c(1,12))+
+      scale_color_manual(values=c("darkgreen","springgreen2","turquoise3","dodgerblue","dodgerblue4","purple2","violet","deeppink4"))+
+  theme_minimal()
+AxonTracking_2Doses_UMAP_DBSCAN_Endpoint_proportions
+
+#save
+ggsave("AxonTracking_Endpoint_proportions.png",plot=AxonTracking_2Doses_UMAP_DBSCAN_Endpoint_proportions,bg="white",width=6.7,height=5.8)
+
+```
+

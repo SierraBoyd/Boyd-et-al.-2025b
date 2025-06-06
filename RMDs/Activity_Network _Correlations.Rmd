@@ -1,0 +1,168 @@
+---
+title: "Activity/Network Endpoint Correlations"
+author: Sierra Boyd
+output:
+  html_document:
+    theme: cerulean
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+```{r load packages}
+
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(pracma)
+library(conflicted)
+library(data.table)
+library(pheatmap)
+
+conflicts_prefer(dplyr::filter())
+
+```
+
+#Load activty and network data
+```{r}
+#set wd to an export folder
+setwd("~")
+
+#Load network data
+#Indicate input directory
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#load data and remove extra columns
+for (i in csv_files){
+  df<-fread(i)
+  df<-df[,-1]
+  df<-df[,-8]
+  Network<-df
+}
+
+#Remove any NA values
+Network<-Network%>% filter(!is.na(value))
+
+#Load activity data
+#Indicate input directory
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+
+#load data and remove extra columns
+for (i in csv_files){
+  df<-fread(i)
+  df<-df[,-1]
+  Activity<-df
+}
+
+#Remove any NA values
+Activity<-Activity%>% filter(!is.na(value))
+
+```
+
+#Wrangle data and plot all network and activity endpoints
+```{r}
+#row bind activity and network data into one df
+All_Data<-rbind(Activity,Network)
+
+#filter to only include controls
+All_Data<-subset(All_Data %>% filter(grepl("Control",Dosage)))
+
+#remove NAs
+All_Data <- All_Data[!is.na(All_Data$value),]
+
+#arrange DOPs and calculate area under the curve
+All_Data<-All_Data %>%
+  group_by(Endpoint,Group_ID) %>%
+  arrange(DOP)%>%
+  summarize (AUC=trapz(DOP,value))%>%
+  ungroup()
+
+#remove any NAs
+All_Data <- All_Data[!is.na(All_Data$AUC),]
+
+#edit endpoint names
+All_Data$Endpoint<-gsub("ISI_mean","Inter-Spike-Interval (ms)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("activeArea","Active Area",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("amplitude_mean","Spike Amplitude (µM)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("firingRate_mean","Firing Rate (Hz)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("Duration","Cluster Duration (ms)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("burstDur","Burst Duration (ms)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("BurstFreq","Burst Frequency (Hz)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("BurstPeak_Mean","Burst Peak (Hz)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("CountsperCluster","Number of Bursts per Cluster",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("IBI","Inter-Burst-Interval (ms)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("ICI","Inter-Cluster-Interval (ms)",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("SPB_Mean","Number of Spikes per Burst",All_Data$Endpoint)
+All_Data$Endpoint<-gsub("ClusterFreq","Cluster Frequency (Counts/min)",All_Data$Endpoint)
+
+#make a wide data format
+All_wide<-All_Data%>%
+  pivot_wider(names_from=Endpoint,values_from=AUC)
+
+#make sure all values are numeric
+All_wide[]<-lapply(All_wide,as.numeric)
+str(All_wide)
+
+#remove identifier columns
+All_wide<-All_wide[,-1]
+
+#generate pearson correlation matrix
+cor_matrix<-cor(All_wide, method="pearson")
+
+#plot
+corrplot(cor_matrix,method="color",type="upper",
+               cex.axis=0.45,
+               col.axis="black",
+               tl.cex=0.62,
+               tl.col="black",
+               tl.srt=45)
+#manually save as PNG
+
+```
+
+#Plot only selected endpoitns
+```{r}
+#indicate selected endpoints
+Endpoints<-c("Active Area","Firing Rate (Hz)","Cluster Duration (ms)","Burst Peak (Hz)","Inter-Cluster-Interval (ms)")
+
+#filter for selected endpoints only
+Select_Data<-All_Data%>%filter(Endpoint %in% Endpoints)
+
+#make a wide data format
+Select_wide<-Select_Data%>%
+  pivot_wider(names_from=Endpoint,values_from=AUC)
+
+#make sure all values are numeric
+Select_wide[]<-lapply(Select_wide,as.numeric)
+
+#remove identifier columns
+Select_wide<-Select_wide[,-1]
+Select_wide<-Select_wide[,-1]
+
+#generate pearson correlation matrix
+Select_cor_matrix<-cor(Select_wide, method="pearson")
+
+#plot
+corrplot(Select_cor_matrix,method="color",type="upper",
+               cex.axis=0.45,
+               col.axis="black",
+               tl.cex=0.9,
+               tl.col="black",
+               tl.srt=45)
+
+#manually save as PNG
+```
+

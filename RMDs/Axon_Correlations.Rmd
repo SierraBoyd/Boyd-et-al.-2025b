@@ -1,0 +1,148 @@
+---
+title: "Action Potential Propagation Endpoint Correlations"
+author: Sierra Boyd
+output:
+  html_document:
+    theme: cerulean
+    toc: false
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+```{r load packages}
+
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(pracma)
+library(conflicted)
+library(data.table)
+library(pheatmap)
+library(corrplot)
+
+conflicts_prefer(dplyr::filter())
+
+```
+
+#Load data
+```{r}
+#set wd to an export folder
+setwd("~")
+
+#Indicate input directory
+project.input.dir <-"~"
+
+#Make list of data files 
+csv_files<- list.files(path=project.input.dir, pattern = "_Melt\\.csv$", recursive = T, full.names = T) 
+
+#Make vector for what the names of the basenames of the data files
+data_frame_names<-gsub("_Melt.csv","",basename(csv_files))
+#load data and remove extra columns
+for (i in csv_files){
+  df<-fread(i)
+  df<-df[,-1]
+  Axon<-df
+}
+
+#Remove any NA values
+Axon<-Axon%>% filter(!is.na(value))
+
+```
+
+#Wrangle data and plot all endpoints
+```{r}
+#filter to only include controls
+Axon<-subset(Axon %>% filter(grepl("Control",Dosage)))
+
+#remove NAs
+Axon <- Axon[!is.na(Axon$value),]
+
+#arrange DOPs and calculate area under the curve
+Axon<-Axon %>%
+  group_by(Endpoint,Group_ID) %>%
+  arrange(DOP)%>%
+  summarize (AUC=trapz(DOP,value))%>%
+  ungroup()
+
+#remove any NAs
+Axon <- Axon[!is.na(Axon$AUC),]
+
+#edit endpoint names
+Axon$Endpoint<-gsub("branchLen_mean_branch","Branch Length (µm)-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("branchConductionVel_mean_branch","Conduction Velocity (m/s)-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("conductionVelFit_mean_branch","Conduction Velocity Coefficient of Variation-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("latFromInitSite_mean_branch","Latency from Initation Site Velocity (ms)-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("distFromInitSite_mean_branch","Distance from Initation Site (µm)-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("neuronFiringRate_mean_branch","Firing Rate (Hz)-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("spikesNoPerConfig_mean_mean_branch","Number of Spikes per Configuration-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("completeness_mean_branch","Completeness-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("fisherProjectionDistance_mean_branch","Fisher Projection Distance-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("neuronConductionVel_mean_neuron","Conduction Velocity (m/s)-Neuron",Axon$Endpoint)
+Axon$Endpoint<-gsub("totalAxonLen_mean_neuron","Total Axon Length (µm)-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("longestBranchLen_mean_neuron","Longest Branch Length (µm)-Neuron",Axon$Endpoint)
+Axon$Endpoint<-gsub("longestDistFromInitSite_mean_neuron","Longest Distance from Initation Site (µm)-Neuron",Axon$Endpoint)
+Axon$Endpoint<-gsub("longestLat_mean_neuron","Longest Latency (ms)-Neuron",Axon$Endpoint)
+Axon$Endpoint<-gsub("amplitudeInitSite_mean_neuron","Amplitude at Initiaiton Site (Hz)-Neuron",Axon$Endpoint)
+Axon$Endpoint<-gsub("totNoSpikes_mean_neuron","Number of Spikes per Neuron-Neuron",Axon$Endpoint)
+Axon$Endpoint<-gsub("neuronFiringRate_mean_neuron","Firing Rate (Hz)-Neuron",Axon$Endpoint)
+Axon$Endpoint<-gsub("totNoSpikes_mean_branch","Number of Spikes-Branch",Axon$Endpoint)
+Axon$Endpoint<-gsub("silhouetteScore_mean_branch","Silhouette Score-Branch",Axon$Endpoint)
+
+#make a wide data format
+All_wide<-Axon%>%
+  pivot_wider(names_from=Endpoint,values_from=AUC)
+
+#make sure all values are numeric
+All_wide[]<-lapply(All_wide,as.numeric)
+str(All_wide)
+
+#remove identifier columns
+All_wide<-All_wide[,-1]
+
+#generate pearson correlation matrix
+cor_matrix<-cor(All_wide, method="pearson")
+
+#plot
+corrplot(cor_matrix,method="color",type="upper",
+               cex.axis=0.45,
+               col.axis="black",
+               tl.cex=0.62,
+               tl.col="black",
+               tl.srt=45)
+#manually save as PNG
+
+```
+
+#Plot only selected endpoitns
+```{r}
+#indicate selected endpoints
+Axon_Endpoints<-c("Conduction Velocity (m/s)-Neuron","Number of Spikes per Neuron-Neuron","Longest Distance from Initation Site (µm)-Neuron")
+
+#filter for selected endpoints only
+Select_Axon<-Axon%>%filter(Endpoint %in% Axon_Endpoints)
+
+#make a wide data format
+Select_wide<-Select_Axon%>%
+  pivot_wider(names_from=Endpoint,values_from=AUC)
+
+#make sure all values are numeric
+Select_wide[]<-lapply(Select_wide,as.numeric)
+
+#remove identifier columns
+Select_wide<-Select_wide[,-1]
+
+#generate pearson correlation matrix
+Select_cor_matrix<-cor(Select_wide, method="pearson")
+
+#plot
+corrplot(Select_cor_matrix,method="color",type="upper",
+               cex.axis=0.45,
+               col.axis="black",
+               tl.cex=0.9,
+               tl.col="black",
+               tl.srt=45)
+#manually save as PNG
+
+```
+
