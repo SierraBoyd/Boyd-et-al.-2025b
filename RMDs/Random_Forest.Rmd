@@ -444,10 +444,13 @@ setwd("~")
 ggsave(MeanDecreaseGini_plot,filename=paste("AllEndpoints_RF_MeanDecreaseGini_plot.png"),height=4.8,width=6.44,unit="in")
 
 #plot
-MeanDecreaseAccuracy_plot<-ggplot(Endpoint_importance_df,aes(x=Endpoint,y=MeanDecreaseAccuracy))+
+MeanDecreaseAccuracy_plot<-ggplot(Endpoint_importance_df,aes(x=fct_reorder(Endpoint,MeanDecreaseAccuracy),y=MeanDecreaseAccuracy))+
   geom_bar(stat="identity",position="dodge")+
   theme_minimal()+
-  theme(axis.text.x=element_text(angle=90,hjust=1))
+  ylab("Mean Decrease Accuracy")+
+  xlab("Features (Endpoints)")+
+  theme(axis.text.x=element_text(angle=90,hjust=1))+
+  coord_flip()
 
 MeanDecreaseAccuracy_plot
 
